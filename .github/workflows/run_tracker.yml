@@ -3,7 +3,12 @@ name: Run AMC Ticket Tracker
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"
+    # Low cadence: every 30 minutes, all day
+    - cron: "*/30 * * * *"
+
+    # High-risk window: every 5 minutes from 10:00 AM–1:55 PM ET, Mon-Fri.
+    # In June/July, New York is UTC-4, so 10 AM–2 PM ET = 14:00–18:00 UTC.
+    - cron: "*/5 14-17 * * 1-5"
 
 jobs:
   check-tickets:

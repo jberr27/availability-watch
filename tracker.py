@@ -5,29 +5,28 @@ from datetime import datetime, timezone
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-TARGET_DATES = ["2026-08-08", "2026-08-09"]
+ATOM_LINCOLN_SQUARE_URL = "https://www.atomtickets.com/theaters/amc-lincoln-square-13/164"
 
-SHOWTIME_URLS = [
-    f"https://www.amctheatres.com/movie-theatres/new-york-city/amc-lincoln-square-13/showtimes?date={date}"
-    for date in TARGET_DATES
+# Canary = already-known Odyssey date.
+# This should be found if the tracker is reading the right page.
+CANARY_PATTERNS = [
+    r"the odyssey",
+    r"sunday jul 26",
+    r"thursday aug 6",
+]
+
+# Targets = what we actually care about.
+TARGET_PATTERNS = [
+    r"saturday aug 8",
+    r"sunday aug 9",
+    r"aug 8",
+    r"aug 9",
 ]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept-Language": "en-US,en;q=0.9",
 }
-
-# Words we expect to see once the right ticket block appears.
-MOVIE_PATTERNS = [
-    r"the\s+odyssey",
-    r"odyssey",
-]
-
-FORMAT_PATTERNS = [
-    r"imax\s*70\s*mm",
-    r"imax\s*70mm",
-    r"70\s*mm",
-]
 
 
 def send_discord_message(message: str) -> None:
@@ -48,45 +47,40 @@ def fetch_page(url: str) -> str:
     return response.text.lower()
 
 
-def has_match(page_text: str) -> bool:
-    movie_found = any(re.search(pattern, page_text) for pattern in MOVIE_PATTERNS)
-    format_found = any(re.search(pattern, page_text) for pattern in FORMAT_PATTERNS)
+def all_patterns_found(page_text: str, patterns: list[str]) -> bool:
+    return all(re.search(pattern, page_text) for pattern in patterns)
 
-    # We want Odyssey + some indication of IMAX 70mm/70mm.
-    return movie_found and format_found
+
+def any_pattern_found(page_text: str, patterns: list[str]) -> bool:
+    return any(re.search(pattern, page_text) for pattern in patterns)
 
 
 def main() -> None:
     checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
     print(f"Checked at {checked_at}")
+    print(f"Checking Atom page: {ATOM_LINCOLN_SQUARE_URL}")
 
-    matches = []
+    page_text = fetch_page(ATOM_LINCOLN_SQUARE_URL)
 
-    for url in SHOWTIME_URLS:
-        print(f"Checking {url}")
+    canary_ok = all_patterns_found(page_text, CANARY_PATTERNS)
+    target_found = any_pattern_found(page_text, TARGET_PATTERNS) and "the odyssey" in page_text
 
-        try:
-            page_text = fetch_page(url)
-
-            if has_match(page_text):
-                matches.append(url)
-
-        except Exception as error:
-            print(f"Error checking {url}: {error}")
-
-    if matches:
-        message = (
-            "🚨 @everyone **THE ODYSSEY IMAX 70MM MAY BE LIVE AT AMC LINCOLN SQUARE** 🚨\n\n"
-            "Check these links immediately:\n"
-            + "\n".join(matches)
-            + f"\n\nChecked at: {checked_at}"
-        )
-
-        send_discord_message(message)
-        print("Match found. Discord alert sent.")
+    if canary_ok:
+        print("CANARY PASS: Found The Odyssey plus known released dates Jul 26 and Aug 6.")
     else:
-        print("No matching Odyssey IMAX 70mm showtimes found yet.")
+        print("CANARY WARNING: Could not confirm known Odyssey dates. Page format may have changed.")
+
+    if target_found:
+        message = (
+            "🚨 @everyone **POSSIBLE ODYSSEY AUG 8/9 DROP DETECTED** 🚨\n\n"
+            "Atom’s AMC Lincoln Square page appears to show Aug 8 or Aug 9.\n"
+            f"Check immediately: {ATOM_LINCOLN_SQUARE_URL}\n\n"
+            f"Checked at: {checked_at}"
+        )
+        send_discord_message(message)
+        print("TARGET FOUND: Discord alert sent.")
+    else:
+        print("TARGET NOT FOUND: Aug 8/9 do not appear listed yet.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,28 @@
+name: Run AMC Ticket Tracker
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs every 10 minutes. GitHub timing is approximate, not exact to the second.
+    - cron: "*/10 * * * *"
+
+jobs:
+  check-tickets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python packages
+        run: pip install requests
+
+      - name: Run tracker
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python tracker.py

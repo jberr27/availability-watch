@@ -3,12 +3,13 @@ name: Run AMC Ticket Tracker
 on:
   workflow_dispatch:
   schedule:
-    # Runs every 10 minutes. GitHub timing is approximate, not exact to the second.
     - cron: "*/10 * * * *"
 
 jobs:
   check-tickets:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Check out repo code
@@ -20,7 +21,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python packages
-        run: pip install requests
+        run: |
+          pip install requests playwright
+          python -m playwright install chromium
 
       - name: Run tracker
         env:

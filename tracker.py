@@ -3,10 +3,11 @@ import html
 import requests
 from datetime import datetime, timezone
 
-FANDANGO_LINKS = {
-    "Fandango Aug 8": "https://www.fandango.com/the-odyssey-2026-241283/movie-overview?date=2026-08-08&format=IMAX%2070MM",
-    "Fandango Aug 9": "https://www.fandango.com/the-odyssey-2026-241283/movie-overview?date=2026-08-09&format=IMAX%2070MM",
-    "Fandango Canary Jul 30": "https://www.fandango.com/the-odyssey-2026-241283/movie-overview?date=2026-07-30&format=IMAX%2070MM",
+FANDANGO_THEATER_LINKS = {
+    "Fandango Theater Canary Jul 22": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-07-22",
+    "Fandango Theater Canary Jul 30": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-07-30",
+    "Fandango Theater Target Aug 8": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-08-08",
+    "Fandango Theater Target Aug 9": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-08-09",
 }
 
 HEADERS = {
@@ -14,50 +15,40 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-STRONG_SIGNALS = [
-    "amc lincoln square",
-    "lincoln square 13",
-    "amc lincoln",
-    "new york city",
-    "2026-08-08",
-    "2026-08-09",
-    "2026-07-30",
-    "aug 8",
-    "aug 9",
-    "jul 30",
+SIGNALS = [
+    "amc lincoln square 13",
+    "1998 broadway",
+    "the odyssey",
+    "odyssey",
     "imax 70mm",
     "imax 70 mm",
+    "70mm",
+    "jul 22",
+    "jul 30",
+    "aug 8",
+    "aug 9",
+    "2026-07-22",
+    "2026-07-30",
+    "2026-08-08",
+    "2026-08-09",
+    "get tickets",
+    "buy tickets",
+    "sold out",
+    "no showtimes",
+    "loading calendar",
+    "loading format filters",
+    "movie-times",
     "showtime",
     "showtimes",
-    "theater",
-    "theatre",
     "ticketing",
     "performance",
     "seat",
-    "sold out",
-    "near you",
 ]
-
-JSONISH_PATTERNS = [
-    "__NEXT_DATA__",
-    "window.__",
-    "apollo",
-    "redux",
-    "showtimes",
-    "theaters",
-    "theatres",
-    "performances",
-    "movieId",
-    "theaterId",
-    "date",
-]
-
 
 def normalize(text: str) -> str:
     text = html.unescape(text or "")
     text = re.sub(r"\s+", " ", text)
     return text.lower()
-
 
 def fetch(url: str) -> str:
     response = requests.get(url, headers=HEADERS, timeout=25, allow_redirects=True)
@@ -66,12 +57,7 @@ def fetch(url: str) -> str:
     response.raise_for_status()
     return normalize(response.text)
 
-
-def count_occurrences(text: str, term: str) -> int:
-    return text.count(term.lower())
-
-
-def snippet_around(text: str, term: str, radius: int = 250) -> str:
+def snippet_around(text: str, term: str, radius: int = 300) -> str:
     idx = text.find(term.lower())
     if idx == -1:
         return ""
@@ -79,61 +65,50 @@ def snippet_around(text: str, term: str, radius: int = 250) -> str:
     end = min(len(text), idx + radius)
     return text[start:end]
 
-
-def analyze_page(label: str, url: str):
+def analyze(label: str, url: str):
     print(f"\n\n=== {label} ===")
     print(f"URL: {url}")
 
     try:
         text = fetch(url)
     except Exception as e:
-        print(f"ERROR fetching page: {e}")
+        print(f"ERROR: {e}")
         return
 
     print(f"Text length: {len(text)}")
 
-    print("\nStrong signal counts:")
-    for signal in STRONG_SIGNALS:
-        count = count_occurrences(text, signal)
+    print("\nSignal counts:")
+    for signal in SIGNALS:
+        count = text.count(signal.lower())
         if count:
             print(f"- {signal}: {count}")
 
-    print("\nJSON/data pattern counts:")
-    for pattern in JSONISH_PATTERNS:
-        count = count_occurrences(text, pattern)
-        if count:
-            print(f"- {pattern}: {count}")
-
-    print("\nMost useful snippets:")
-
+    print("\nKey snippets:")
     for term in [
-        "amc lincoln square",
-        "lincoln square",
-        "2026-08-08",
-        "2026-08-09",
-        "2026-07-30",
+        "the odyssey",
+        "amc lincoln square 13",
+        "1998 broadway",
         "imax 70mm",
+        "get tickets",
+        "sold out",
+        "no showtimes",
+        "loading calendar",
         "showtimes",
-        "theater",
-        "ticketing",
-        "__next_data__",
     ]:
         snippet = snippet_around(text, term)
         if snippet:
             print(f"\n--- around '{term}' ---")
-            print(snippet[:800])
-
+            print(snippet[:900])
 
 def main():
     checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"Checked at: {checked_at}")
-    print("Mode: FANDANGO DEEP DIAGNOSTIC ONLY — no Discord alert will be sent.")
+    print("Mode: FANDANGO THEATER-PAGE DIAGNOSTIC ONLY — no Discord alert.")
 
-    for label, url in FANDANGO_LINKS.items():
-        analyze_page(label, url)
+    for label, url in FANDANGO_THEATER_LINKS.items():
+        analyze(label, url)
 
     print("\n\nDone.")
-
 
 if __name__ == "__main__":
     main()

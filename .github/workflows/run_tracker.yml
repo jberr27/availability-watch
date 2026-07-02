@@ -3,12 +3,13 @@ name: Run AMC Ticket Tracker
 on:
   workflow_dispatch:
   schedule:
-    # Low cadence: every 30 minutes, all day
-    - cron: "*/30 * * * *"
+    # Low cadence: every ~30 minutes, avoiding :00 and :30
+    - cron: "7,37 * * * *"
 
     # High-risk window: every 5 minutes from 10:00 AM–1:55 PM ET, Mon-Fri.
-    # In June/July, New York is UTC-4, so 10 AM–2 PM ET = 14:00–18:00 UTC.
-    - cron: "*/5 14-17 * * 1-5"
+    # Uses odd offsets to avoid top-of-hour GitHub congestion.
+    # 10 AM–2 PM ET = 14:00–18:00 UTC in June/July.
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 14-17 * * 1-5"
 
 jobs:
   check-tickets:
@@ -29,6 +30,14 @@ jobs:
         run: |
           pip install requests playwright
           python -m playwright install chromium
+
+      - name: Print schedule diagnostics
+        run: |
+          echo "GitHub triggered this workflow at UTC:"
+          date -u
+          echo "Event name: $GITHUB_EVENT_NAME"
+          echo "Run number: $GITHUB_RUN_NUMBER"
+          echo "Run attempt: $GITHUB_RUN_ATTEMPT"
 
       - name: Run tracker
         env:

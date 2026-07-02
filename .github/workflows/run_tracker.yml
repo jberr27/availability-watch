@@ -3,12 +3,11 @@ name: Run AMC Ticket Tracker
 on:
   workflow_dispatch:
   schedule:
-    # Low cadence: every ~30 minutes, avoiding :00 and :30
+    # Low cadence: every ~30 minutes, avoiding :00 and :30 GitHub congestion
     - cron: "7,37 * * * *"
 
     # High-risk window: every 5 minutes from 10:00 AM–1:55 PM ET, Mon-Fri.
-    # Uses odd offsets to avoid top-of-hour GitHub congestion.
-    # 10 AM–2 PM ET = 14:00–18:00 UTC in June/July.
+    # In June/July, New York is UTC-4, so 10 AM–2 PM ET = 14:00–18:00 UTC.
     - cron: "2,7,12,17,22,27,32,37,42,47,52,57 14-17 * * 1-5"
 
 jobs:
@@ -25,10 +24,22 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-python-3.11-v1
 
       - name: Install Python packages
         run: |
           pip install requests playwright
+
+      - name: Install Playwright Chromium if needed
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: |
           python -m playwright install chromium
 
       - name: Print schedule diagnostics

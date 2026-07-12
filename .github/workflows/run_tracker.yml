@@ -18,10 +18,10 @@ jobs:
 
     steps:
       - name: Check out repo code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
@@ -35,7 +35,7 @@ jobs:
 
       - name: Install Python packages
         run: |
-          pip install requests playwright
+          pip install -r requirements.txt
 
       - name: Install Playwright Chromium if needed
         if: steps.playwright-cache.outputs.cache-hit != 'true'

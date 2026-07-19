@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -55,6 +56,54 @@ def matching_terms(text: str, item: dict, config: dict) -> list[str]:
     return hits
 
 
+SHOWTIME_PATTERN = re.compile(r"\b(?:1[0-2]|[1-9]):[0-5]\d\s*[ap](?:m)?\b")
+
+
+def section_text(text: str, item: dict) -> str:
+    start_marker = normalize(item.get("section_start", ""))
+    end_marker = normalize(item.get("section_end", ""))
+    if not start_marker:
+        return text
+
+    start = text.find(start_marker)
+    if start == -1:
+        return ""
+
+    section = text[start:]
+    if end_marker:
+        end = section.find(end_marker, len(start_marker))
+        if end != -1:
+            section = section[:end]
+    return section
+
+
+def normalized_showtime(value: str) -> str:
+    return normalize(value).replace(" ", "").removesuffix("m")
+
+
+def new_showtimes(text: str, item: dict) -> list[str]:
+    scoped_text = section_text(text, item)
+    if not scoped_text:
+        return []
+
+    baseline = {
+        normalized_showtime(value) for value in item.get("baseline_times", [])
+    }
+    discovered = {
+        normalized_showtime(value) for value in SHOWTIME_PATTERN.findall(scoped_text)
+    }
+    return sorted(discovered - baseline)
+
+
+def detection_hits(text: str, item: dict, config: dict) -> list[str]:
+    detection = item.get("detection", "terms")
+    if detection == "terms":
+        return matching_terms(text, item, config)
+    if detection == "new_showtimes":
+        return new_showtimes(text, item)
+    raise RuntimeError(f"Unsupported detection mode: {detection}")
+
+
 def send_discord_message(webhook_url: str, message: str) -> None:
     response = requests.post(webhook_url, json={"content": message}, timeout=15)
     response.raise_for_status()
@@ -78,7 +127,7 @@ def rendered_text(page, item: dict, config: dict) -> tuple[str, list[str]]:
         except PlaywrightTimeoutError:
             last_text = ""
 
-        hits = matching_terms(last_text, item, config)
+        hits = detection_hits(last_text, item, config)
         if hits:
             print(f"Signal detected after rendering: {', '.join(hits)}")
             return last_text, hits
@@ -99,7 +148,7 @@ def main() -> int:
     print("Mode: repeat alerts while configured target signals are visible.")
 
     canary_results: list[bool] = []
-    detected_targets: list[dict] = []
+    detected_targets: list[tuple[dict, list[str]]] = []
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -128,8 +177,8 @@ def main() -> int:
             for item in config["targets"]:
                 _, hits = rendered_text(page, item, config)
                 if hits:
-                    detected_targets.append(item)
-                    print(f"TARGET FOUND: {item['label']}")
+                    detected_targets.append((item, hits))
+                    print(f"TARGET FOUND: {item['label']} ({', '.join(hits)})")
                 else:
                     print(f"TARGET NOT FOUND: {item['label']}")
         finally:
@@ -139,9 +188,12 @@ def main() -> int:
         print("\nNo target signals detected. No Discord alert sent.")
         return 0
 
-    labels = ", ".join(item["label"] for item in detected_targets)
+    labels = ", ".join(
+        f"{item['label']} ({', '.join(hits)})"
+        for item, hits in detected_targets
+    )
     links = []
-    for item in detected_targets:
+    for item, _ in detected_targets:
         link = item.get("action_url") or config.get("default_action_url") or item["url"]
         links.append(f"{item['label']}: {link}")
 

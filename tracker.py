@@ -1,83 +1,108 @@
+import json
 import os
+import sys
 from datetime import datetime, timezone
 
 import requests
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-FANDANGO_TARGETS = {
-    "Aug 8": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-08-08",
-    "Aug 9": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-08-09",
-}
+def load_config() -> dict:
+    raw = os.environ.get("WATCH_CONFIG")
+    if not raw:
+        raise RuntimeError("Missing WATCH_CONFIG secret.")
 
-FANDANGO_CANARIES = {
-    "Jul 22": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-07-22",
-    "Jul 30": "https://www.fandango.com/amc-lincoln-square-13-aabqi/theater-page?format=IMAX%2070MM&date=2026-07-30",
-}
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"WATCH_CONFIG is not valid JSON: {error}") from error
 
-AMC_LINK = "https://www.amctheatres.com/movie-theatres/new-york-city/amc-lincoln-square-13/showtimes?date=2026-08-09"
+    required = ["alert_title", "default_signal_terms", "canaries", "targets"]
+    missing = [key for key in required if not config.get(key)]
+    if missing:
+        raise RuntimeError(f"WATCH_CONFIG is missing: {', '.join(missing)}")
 
-SIGNAL_TERMS = [
-    "imax 70mm",
-    "imax 70 mm",
-    "70mm",
-    "70 mm",
-]
+    for group in ("canaries", "targets"):
+        for item in config[group]:
+            if not item.get("label") or not item.get("url"):
+                raise RuntimeError(f"Each {group} entry needs label and url.")
+
+    return config
 
 
 def normalize(text: str) -> str:
     return " ".join((text or "").lower().split())
 
 
-def send_discord_message(message: str) -> None:
-    if not DISCORD_WEBHOOK_URL:
-        raise RuntimeError("Missing DISCORD_WEBHOOK_URL secret.")
+def signal_terms(item: dict, config: dict) -> list[str]:
+    return [
+        normalize(term)
+        for term in item.get("signal_terms", config["default_signal_terms"])
+        if normalize(term)
+    ]
 
-    response = requests.post(
-        DISCORD_WEBHOOK_URL,
-        json={"content": message},
-        timeout=15,
-    )
+
+def matching_terms(text: str, item: dict, config: dict) -> list[str]:
+    terms = signal_terms(item, config)
+    hits = [term for term in terms if term in text]
+    mode = item.get("match", config.get("default_match", "any"))
+
+    if mode == "all":
+        return hits if len(hits) == len(terms) else []
+    if mode != "any":
+        raise RuntimeError(f"Unsupported match mode: {mode}")
+    return hits
+
+
+def send_discord_message(webhook_url: str, message: str) -> None:
+    response = requests.post(webhook_url, json={"content": message}, timeout=15)
     response.raise_for_status()
 
 
-def page_has_70mm_signal(text: str) -> bool:
-    return any(term in text for term in SIGNAL_TERMS)
+def rendered_text(page, item: dict, config: dict) -> tuple[str, list[str]]:
+    label = item["label"]
+    url = item["url"]
+    timeout_seconds = int(config.get("render_timeout_seconds", 15))
 
-
-def get_visible_text(page, label: str, url: str) -> str:
     print(f"\n=== Checking {label} ===")
     print(f"URL: {url}")
 
-    response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    response = page.goto(url, wait_until="domcontentloaded", timeout=45_000)
     print(f"Initial status: {response.status if response else 'unknown'}")
 
-    page.wait_for_timeout(15000)
+    last_text = ""
+    for _ in range(timeout_seconds):
+        try:
+            last_text = normalize(page.locator("body").inner_text(timeout=3_000))
+        except PlaywrightTimeoutError:
+            last_text = ""
 
-    text = normalize(page.locator("body").inner_text(timeout=15000))
+        hits = matching_terms(last_text, item, config)
+        if hits:
+            print(f"Signal detected after rendering: {', '.join(hits)}")
+            return last_text, hits
+        page.wait_for_timeout(1_000)
 
-    print(f"Final browser URL: {page.url}")
-    print(f"Visible text length: {len(text)}")
-
-    for term in SIGNAL_TERMS:
-        count = text.count(term)
-        if count:
-            print(f"Signal term '{term}': {count}")
-
-    return text
+    print(f"No signal after {timeout_seconds} seconds of rendering.")
+    return last_text, []
 
 
-def main() -> None:
+def main() -> int:
+    config = load_config()
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        raise RuntimeError("Missing DISCORD_WEBHOOK_URL secret.")
+
     checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"Checked at: {checked_at}")
-    print("Mode: PRODUCTION — alert if Aug 8/9 Fandango shows IMAX 70MM signal.")
+    print("Mode: repeat alerts while configured target signals are visible.")
 
-    detected_dates = []
-    canary_passed = False
+    canary_results: list[bool] = []
+    detected_targets: list[dict] = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(
             viewport={"width": 1365, "height": 900},
             user_agent=(
@@ -87,52 +112,53 @@ def main() -> None:
             ),
         )
 
-        print("\n\n################")
-        print("# CANARY CHECKS")
-        print("################")
+        try:
+            print("\n# HEALTH CHECKS")
+            for item in config["canaries"]:
+                _, hits = rendered_text(page, item, config)
+                passed = bool(hits)
+                canary_results.append(passed)
+                print(f"HEALTH {'PASS' if passed else 'FAIL'}: {item['label']}")
 
-        for label, url in FANDANGO_CANARIES.items():
-            text = get_visible_text(page, f"Canary {label}", url)
+            if not all(canary_results):
+                print("Health checks failed. Targets were not evaluated.")
+                return 2
 
-            if page_has_70mm_signal(text):
-                canary_passed = True
-                print(f"CANARY PASS: {label} shows IMAX 70MM / 70MM signal.")
-            else:
-                print(f"CANARY WARNING: {label} did not show IMAX 70MM / 70MM signal.")
+            print("\n# TARGET CHECKS")
+            for item in config["targets"]:
+                _, hits = rendered_text(page, item, config)
+                if hits:
+                    detected_targets.append(item)
+                    print(f"TARGET FOUND: {item['label']}")
+                else:
+                    print(f"TARGET NOT FOUND: {item['label']}")
+        finally:
+            browser.close()
 
-        print("\n\n################")
-        print("# TARGET CHECKS")
-        print("################")
+    if not detected_targets:
+        print("\nNo target signals detected. No Discord alert sent.")
+        return 0
 
-        for label, url in FANDANGO_TARGETS.items():
-            text = get_visible_text(page, f"Target {label}", url)
+    labels = ", ".join(item["label"] for item in detected_targets)
+    links = []
+    for item in detected_targets:
+        link = item.get("action_url") or config.get("default_action_url") or item["url"]
+        links.append(f"{item['label']}: {link}")
 
-            if page_has_70mm_signal(text):
-                detected_dates.append(label)
-                print(f"TARGET SIGNAL FOUND: {label} shows IMAX 70MM / 70MM.")
-            else:
-                print(f"TARGET NOT FOUND: {label} does not show IMAX 70MM / 70MM yet.")
-
-        browser.close()
-
-    if detected_dates:
-        date_text = ", ".join(detected_dates)
-
-        message = (
-            f"🚨 @everyone **POSSIBLE ODYSSEY IMAX 70MM DROP DETECTED: {date_text}** 🚨\n\n"
-            "Open AMC Lincoln Square immediately:\n"
-            f"{AMC_LINK}\n\n"
-            f"Checked at: {checked_at}"
-        )
-
-        send_discord_message(message)
-        print("DISCORD ALERT SENT.")
-    else:
-        print("\nNo target dates detected. No Discord alert sent.")
-
-    if not canary_passed:
-        print("\nWARNING: Canary did not pass. Detector may be unreliable right now.")
+    mention = config.get("mention", "@everyone")
+    message = (
+        f"🚨 {mention} **{config['alert_title']}: {labels}** 🚨\n\n"
+        + "\n".join(links)
+        + f"\n\nChecked at: {checked_at}"
+    )
+    send_discord_message(webhook_url, message)
+    print("DISCORD ALERT SENT.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print(f"TRACKER ERROR: {error}", file=sys.stderr)
+        raise

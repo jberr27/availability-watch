@@ -1,56 +1,52 @@
-name: Run AMC Ticket Tracker
+name: Run availability watch
 
 on:
   workflow_dispatch:
-  schedule:
-    # Low cadence: every ~30 minutes, avoiding :00 and :30 GitHub congestion
-    - cron: "7,37 * * * *"
 
-    # High-risk window: every 5 minutes from 10:00 AM–1:55 PM ET, Mon-Fri.
-    # In June/July, New York is UTC-4, so 10 AM–2 PM ET = 14:00–18:00 UTC.
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 14-17 * * 1-5"
+concurrency:
+  group: availability-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  check-tickets:
+  check:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 5
 
     steps:
-      - name: Check out repo code
+      - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
 
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v4
+      - name: Cache browser
+        id: browser-cache
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-python-3.11-v1
+          key: playwright-${{ runner.os }}-python-3.11-${{ hashFiles('requirements.txt') }}
 
       - name: Install Python packages
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Install Playwright Chromium if needed
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: |
-          python -m playwright install chromium
+      - name: Install browser when cache is empty
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
 
-      - name: Print schedule diagnostics
+      - name: Print trigger diagnostics
         run: |
-          echo "GitHub triggered this workflow at UTC:"
-          date -u
-          echo "Event name: $GITHUB_EVENT_NAME"
-          echo "Run number: $GITHUB_RUN_NUMBER"
-          echo "Run attempt: $GITHUB_RUN_ATTEMPT"
+          echo "UTC time: $(date -u)"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Run: $GITHUB_RUN_NUMBER"
 
-      - name: Run tracker
+      - name: Run watch
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          WATCH_CONFIG: ${{ secrets.WATCH_CONFIG }}
         run: python tracker.py

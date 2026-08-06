@@ -56,6 +56,23 @@ def matching_terms(text: str, item: dict, config: dict) -> list[str]:
     return hits
 
 
+DEFAULT_PAGE_HEALTH_TERMS = [
+    "amc lincoln square 13",
+    "movie times calendar",
+    "nearby theaters",
+]
+
+
+def page_is_healthy(text: str, config: dict) -> bool:
+    """Confirm that Fandango rendered the theater page, independent of any movie."""
+    terms = [
+        normalize(term)
+        for term in config.get("page_health_terms", DEFAULT_PAGE_HEALTH_TERMS)
+        if normalize(term)
+    ]
+    return bool(terms) and all(term in text for term in terms)
+
+
 SHOWTIME_PATTERN = re.compile(r"\b(?:1[0-2]|[1-9]):[0-5]\d\s*[ap](?:m)?\b")
 
 
@@ -164,9 +181,14 @@ def main() -> int:
         try:
             print("\n# HEALTH CHECKS")
             for item in config["canaries"]:
-                _, hits = rendered_text(page, item, config)
-                passed = bool(hits)
+                text, hits = rendered_text(page, item, config)
+                passed = page_is_healthy(text, config)
                 canary_results.append(passed)
+                if passed and not hits:
+                    print(
+                        "Configured movie signal is absent, but the Fandango "
+                        "theater page rendered normally."
+                    )
                 print(f"HEALTH {'PASS' if passed else 'FAIL'}: {item['label']}")
 
             if not all(canary_results):

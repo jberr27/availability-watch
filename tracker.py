@@ -112,12 +112,83 @@ def new_showtimes(text: str, item: dict) -> list[str]:
     return sorted(discovered - baseline)
 
 
-def detection_hits(text: str, item: dict, config: dict) -> list[str]:
+def is_ticket_purchase_url(url: str) -> bool:
+    normalized_url = (url or "").lower()
+    return (
+        "tickets.fandango.com/transaction/ticketing/" in normalized_url
+        and ("showtimehashcode=" in normalized_url or "sdate=" in normalized_url)
+    )
+
+
+def new_purchasable_showtimes(links: list[dict], item: dict) -> list[str]:
+    baseline = {
+        normalized_showtime(value) for value in item.get("baseline_times", [])
+    }
+    discovered: set[str] = set()
+
+    for link in links:
+        if not is_ticket_purchase_url(link.get("href", "")):
+            continue
+        link_text = normalize(
+            " ".join(
+                [
+                    link.get("text", ""),
+                    link.get("aria_label", ""),
+                    link.get("title", ""),
+                ]
+            )
+        )
+        discovered.update(
+            normalized_showtime(value) for value in SHOWTIME_PATTERN.findall(link_text)
+        )
+
+    return sorted(discovered - baseline)
+
+
+def purchase_links_for_movie(page, item: dict) -> list[dict]:
+    movie_title = normalize(item.get("section_start", ""))
+    if not movie_title:
+        return []
+
+    return page.evaluate(
+        """
+        (movieTitle) => {
+            const normalize = (value) => (value || "")
+                .toLowerCase()
+                .replace(/\\s+/g, " ")
+                .trim();
+            const listing = Array.from(
+                document.querySelectorAll("li.shared-movie-showtimes")
+            ).find((element) => {
+                const title = element.querySelector(
+                    ".shared-movie-showtimes__movie-title"
+                );
+                return title && normalize(title.textContent).includes(movieTitle);
+            });
+
+            if (!listing) return [];
+
+            return Array.from(listing.querySelectorAll("a[href]")).map((link) => ({
+                href: link.href || "",
+                text: link.innerText || "",
+                aria_label: link.getAttribute("aria-label") || "",
+                title: link.getAttribute("title") || "",
+            }));
+        }
+        """,
+        movie_title,
+    )
+
+
+def detection_hits(text: str, item: dict, config: dict, page=None) -> list[str]:
     detection = item.get("detection", "terms")
     if detection == "terms":
         return matching_terms(text, item, config)
     if detection == "new_showtimes":
-        return new_showtimes(text, item)
+        if page is None:
+            return []
+        links = purchase_links_for_movie(page, item)
+        return new_purchasable_showtimes(links, item)
     raise RuntimeError(f"Unsupported detection mode: {detection}")
 
 
@@ -144,12 +215,19 @@ def rendered_text(page, item: dict, config: dict) -> tuple[str, list[str]]:
         except PlaywrightTimeoutError:
             last_text = ""
 
-        hits = detection_hits(last_text, item, config)
+        hits = detection_hits(last_text, item, config, page)
         if hits:
-            print(f"Signal detected after rendering: {', '.join(hits)}")
+            print(f"Purchasable signal detected after rendering: {', '.join(hits)}")
             return last_text, hits
         page.wait_for_timeout(1_000)
 
+    if item.get("detection") == "new_showtimes":
+        announced = new_showtimes(last_text, item)
+        if announced:
+            print(
+                "Announced but not yet purchasable: "
+                + ", ".join(announced)
+            )
     print(f"No signal after {timeout_seconds} seconds of rendering.")
     return last_text, []
 

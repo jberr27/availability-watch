@@ -54,6 +54,40 @@ class TrackerTests(unittest.TestCase):
 
         self.assertEqual(tracker.new_showtimes(page, item), ["10:00a", "3:00p"])
 
+    def test_coming_soon_times_without_ticket_links_do_not_trigger(self):
+        item = {"baseline_times": ["7:00p", "11:00p"]}
+        links = [
+            {
+                "text": "10:00a",
+                "href": "https://www.fandango.com/dune-part-three-2026-244800/movie-overview",
+            },
+            {"text": "3:00p", "href": ""},
+        ]
+
+        self.assertEqual(tracker.new_purchasable_showtimes(links, item), [])
+
+    def test_only_new_showtimes_with_purchase_links_trigger(self):
+        item = {"baseline_times": ["7:00p", "11:00p"]}
+        links = [
+            {
+                "text": "7:00p",
+                "href": "https://tickets.fandango.com/transaction/ticketing/mobile/jump.aspx?sdate=2026-12-18%2B19%3A00&showtimehashcode=baseline",
+            },
+            {
+                "aria_label": "Buy tickets for 10:00 AM showtime",
+                "href": "https://tickets.fandango.com/transaction/ticketing/mobile/jump.aspx?sdate=2026-12-18%2B10%3A00&showtimehashcode=new",
+            },
+            {
+                "text": "3:00p",
+                "href": "https://www.fandango.com/dune-part-three-2026-244800/movie-overview",
+            },
+        ]
+
+        self.assertEqual(
+            tracker.new_purchasable_showtimes(links, item),
+            ["10:00a"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,11 +2,56 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+
+
+STRATEGIC_TARGET_DATES = [
+    ("2026-12-18", "December 18, 2026"),
+    ("2026-12-27", "December 27, 2026"),
+    ("2027-01-03", "January 3, 2027"),
+    ("2027-01-09", "January 9, 2027"),
+]
+
+AMC_DATE_URL = (
+    "https://www.amctheatres.com/movie-theatres/new-york-city/"
+    "amc-lincoln-square-13/showtimes?date={date}"
+)
+
+
+def url_with_date(url: str, target_date: str) -> str:
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["date"] = target_date
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
+def build_strategic_targets(config: dict) -> list[dict]:
+    """Create a small set of high-value date checks from the configured template."""
+    template = config["targets"][0]
+    original_date = template.get("target_date", "2026-12-18")
+    original_baseline = list(template.get("baseline_times", []))
+    action_template = config.get("amc_action_url_template", AMC_DATE_URL)
+    targets = []
+
+    for target_date, label in STRATEGIC_TARGET_DATES:
+        item = dict(template)
+        item["label"] = label
+        item["target_date"] = target_date
+        item["url"] = url_with_date(template["url"], target_date)
+        item["action_url"] = action_template.format(date=target_date)
+        item["baseline_times"] = (
+            original_baseline if target_date == original_date else []
+        )
+        targets.append(item)
+
+    return targets
 
 
 def load_config() -> dict:
@@ -28,6 +73,8 @@ def load_config() -> dict:
         for item in config[group]:
             if not item.get("label") or not item.get("url"):
                 raise RuntimeError(f"Each {group} entry needs label and url.")
+
+    config["targets"] = build_strategic_targets(config)
 
     return config
 
@@ -197,6 +244,45 @@ def send_discord_message(webhook_url: str, message: str) -> None:
     response.raise_for_status()
 
 
+def human_date(target_date: str) -> str:
+    parsed = date.fromisoformat(target_date)
+    return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+
+
+def detected_date_heading(detected_targets: list[tuple[dict, list[str]]]) -> str:
+    dates = sorted(
+        date.fromisoformat(item["target_date"])
+        for item, _ in detected_targets
+    )
+    if len(dates) == 1:
+        return human_date(dates[0].isoformat())
+    return f"{human_date(dates[0].isoformat())}–{human_date(dates[-1].isoformat())}"
+
+
+def build_alert_message(
+    config: dict,
+    detected_targets: list[tuple[dict, list[str]]],
+    checked_at: str,
+) -> str:
+    date_heading = detected_date_heading(detected_targets)
+    details = "\n".join(
+        f"{item['label']}: {', '.join(hits)}"
+        for item, hits in detected_targets
+    )
+    links = "\n".join(
+        f"{item['label']}: "
+        f"{item.get('action_url') or config.get('default_action_url') or item['url']}"
+        for item, _ in detected_targets
+    )
+    mention = config.get("mention", "@everyone")
+    return (
+        f"🚨 {mention} **{config['alert_title']} — {date_heading}** 🚨\n\n"
+        f"Confirmed purchasable showtimes:\n{details}\n\n"
+        f"Open AMC immediately:\n{links}\n\n"
+        f"Checked at: {checked_at}"
+    )
+
+
 def rendered_text(page, item: dict, config: dict) -> tuple[str, list[str]]:
     label = item["label"]
     url = item["url"]
@@ -288,21 +374,7 @@ def main() -> int:
         print("\nNo target signals detected. No Discord alert sent.")
         return 0
 
-    labels = ", ".join(
-        f"{item['label']} ({', '.join(hits)})"
-        for item, hits in detected_targets
-    )
-    links = []
-    for item, _ in detected_targets:
-        link = item.get("action_url") or config.get("default_action_url") or item["url"]
-        links.append(f"{item['label']}: {link}")
-
-    mention = config.get("mention", "@everyone")
-    message = (
-        f"🚨 {mention} **{config['alert_title']}: {labels}** 🚨\n\n"
-        + "\n".join(links)
-        + f"\n\nChecked at: {checked_at}"
-    )
+    message = build_alert_message(config, detected_targets, checked_at)
     send_discord_message(webhook_url, message)
     print("DISCORD ALERT SENT.")
     return 0
